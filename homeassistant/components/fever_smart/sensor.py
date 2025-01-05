@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING, Any
 
 from sensor_state_data import (
     DeviceKey,
@@ -11,12 +12,11 @@ from sensor_state_data import (
     Units,
 )
 
-from homeassistant import config_entries
+from homeassistant import config_entries, const
 from homeassistant.components.bluetooth.passive_update_processor import (
     PassiveBluetoothDataProcessor,
     PassiveBluetoothDataUpdate,
     PassiveBluetoothEntityKey,
-    PassiveBluetoothProcessorCoordinator,
     PassiveBluetoothProcessorEntity,
 )
 from homeassistant.components.sensor import (
@@ -25,10 +25,29 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import (
+    ATTR_CONNECTIONS,
+    ATTR_IDENTIFIERS,
+    ATTR_NAME,
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
+from homeassistant.helpers.entity import EntityDescription
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.sensor import sensor_device_info_to_hass_device_info
+
+from .coordinator import (
+    FeverSmartPassiveBluetoothDataProcessor,
+    FeverSmartPassiveBluetoothProcessorCoordinator,
+)
+
+if TYPE_CHECKING:
+    # `sensor_state_data` is a second-party library (i.e. maintained by Home Assistant
+    # core members) which is not strictly required by Home Assistant.
+    # Therefore, we import it as a type hint only.
+    from sensor_state_data import SensorDeviceInfo
 
 from .const import DOMAIN
 
@@ -42,41 +61,23 @@ SENSOR_DESCRIPTIONS = {
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         state_class=SensorStateClass.MEASUREMENT,
     ),
-    # (SSDSensorDeviceClass.HUMIDITY, Units.PERCENTAGE): SensorEntityDescription(
-    #     key=f"{SSDSensorDeviceClass.HUMIDITY}_{Units.PERCENTAGE}",
-    #     device_class=SensorDeviceClass.HUMIDITY,
-    #     native_unit_of_measurement=PERCENTAGE,
-    #     state_class=SensorStateClass.MEASUREMENT,
-    # ),
-    # (SSDSensorDeviceClass.PRESSURE, Units.PRESSURE_HPA): SensorEntityDescription(
-    #     key=f"{SSDSensorDeviceClass.PRESSURE}_{Units.PRESSURE_HPA}",
-    #     device_class=SensorDeviceClass.PRESSURE,
-    #     native_unit_of_measurement=UnitOfPressure.HPA,
-    #     state_class=SensorStateClass.MEASUREMENT,
-    # ),
-    # (
-    #     SSDSensorDeviceClass.VOLTAGE,
-    #     Units.ELECTRIC_POTENTIAL_MILLIVOLT,
-    # ): SensorEntityDescription(
-    #     key=f"{SSDSensorDeviceClass.VOLTAGE}_{Units.ELECTRIC_POTENTIAL_MILLIVOLT}",
-    #     native_unit_of_measurement=UnitOfElectricPotential.MILLIVOLT,
-    #     state_class=SensorStateClass.MEASUREMENT,
-    # ),
-    # (
-    #     SSDSensorDeviceClass.SIGNAL_STRENGTH,
-    #     Units.SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
-    # ): SensorEntityDescription(
-    #     key=f"{SSDSensorDeviceClass.SIGNAL_STRENGTH}_{Units.SIGNAL_STRENGTH_DECIBELS_MILLIWATT}",
-    #     device_class=SensorDeviceClass.SIGNAL_STRENGTH,
-    #     native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
-    #     state_class=SensorStateClass.MEASUREMENT,
-    #     entity_registry_enabled_default=False,
-    # ),
-    # (SSDSensorDeviceClass.COUNT, None): SensorEntityDescription(
-    #     key="movement_counter",
-    #     state_class=SensorStateClass.TOTAL_INCREASING,
-    #     entity_registry_enabled_default=False,
-    # ),
+    (SSDSensorDeviceClass.BATTERY, Units.PERCENTAGE): SensorEntityDescription(
+        key=f"{SSDSensorDeviceClass.BATTERY}_{Units.PERCENTAGE}",
+        device_class=SensorDeviceClass.BATTERY,
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    (
+        SSDSensorDeviceClass.SIGNAL_STRENGTH,
+        Units.SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    ): SensorEntityDescription(
+        key=f"{SSDSensorDeviceClass.SIGNAL_STRENGTH}_{Units.SIGNAL_STRENGTH_DECIBELS_MILLIWATT}",
+        device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+        native_unit_of_measurement=Units.SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
 }
 
 
@@ -94,13 +95,31 @@ def _to_sensor_key(
     return (description.device_class, description.native_unit_of_measurement)
 
 
+def sensor_device_info_to_hass_device_info(
+    sensor_device_info: SensorDeviceInfo,
+    device_id: str,
+) -> DeviceInfo:
+    """Convert a sensor_state_data sensor device info to a HA device info."""
+    device_info = DeviceInfo()
+    if sensor_device_info.name is not None:
+        device_info[const.ATTR_NAME] = sensor_device_info.name
+    if sensor_device_info.manufacturer is not None:
+        device_info[const.ATTR_MANUFACTURER] = sensor_device_info.manufacturer
+    if sensor_device_info.model is not None:
+        device_info[const.ATTR_MODEL] = sensor_device_info.model
+    if sensor_device_info.sw_version is not None:
+        device_info[const.ATTR_SW_VERSION] = sensor_device_info.sw_version
+    device_info[const.ATTR_IDENTIFIERS] = {DOMAIN, device_id}
+    return device_info
+
+
 def sensor_update_to_bluetooth_data_update(
     sensor_update: SensorUpdate,
 ) -> PassiveBluetoothDataUpdate:
     """Convert a sensor update to a bluetooth data update."""
     return PassiveBluetoothDataUpdate(
         devices={
-            device_id: sensor_device_info_to_hass_device_info(device_info)
+            device_id: sensor_device_info_to_hass_device_info(device_info, device_id)
             for device_id, device_info in sensor_update.devices.items()
         },
         entity_descriptions={
@@ -128,10 +147,12 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Fever Smart BLE sensors."""
     _LOGGER.info("Setting up fever smart sensor")
-    coordinator: PassiveBluetoothProcessorCoordinator = hass.data[DOMAIN][
+    coordinator: FeverSmartPassiveBluetoothProcessorCoordinator = hass.data[DOMAIN][
         entry.entry_id
     ]
-    processor = PassiveBluetoothDataProcessor(sensor_update_to_bluetooth_data_update)
+    processor = FeverSmartPassiveBluetoothDataProcessor(
+        sensor_update_to_bluetooth_data_update
+    )
     entry.async_on_unload(
         processor.async_add_entities_listener(
             FeverSmartBluetoothSensorEntity, async_add_entities
@@ -145,6 +166,25 @@ class FeverSmartBluetoothSensorEntity(
     SensorEntity,
 ):
     """Representation of a Fever Smart BLE Sensor."""
+
+    def __init__(
+        self,
+        processor: PassiveBluetoothDataProcessor,
+        entity_key: PassiveBluetoothEntityKey,
+        description: EntityDescription,
+        context: Any = None,
+    ) -> None:
+        """Create the entity with a PassiveBluetoothDataProcessor."""
+        super().__init__(processor, entity_key, description, context)
+        device_id = entity_key.device_id
+        key = entity_key.key
+        self._attr_device_info = DeviceInfo(
+            {ATTR_IDENTIFIERS: {(DOMAIN, f"{device_id}")}}
+        )
+        self._attr_unique_id = f"{device_id}-{key}"
+
+        if ATTR_NAME not in self._attr_device_info:
+            self._attr_device_info[ATTR_NAME] = device_id
 
     @property
     def native_value(self) -> int | float | None:

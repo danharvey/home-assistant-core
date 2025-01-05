@@ -6,14 +6,12 @@ import logging
 from pyfeversmart import FeverSmartAdvParser
 
 from homeassistant.components.bluetooth import BluetoothScanningMode
-from homeassistant.components.bluetooth.passive_update_processor import (
-    PassiveBluetoothProcessorCoordinator,
-)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
+from .coordinator import FeverSmartPassiveBluetoothProcessorCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,10 +22,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up fever_smart from a config entry."""
     address = entry.unique_id
     assert address is not None
-    data = FeverSmartAdvParser()
+    data = FeverSmartAdvParser(key=entry.data.get("key"))
     coordinator = hass.data.setdefault(DOMAIN, {})[
         entry.entry_id
-    ] = PassiveBluetoothProcessorCoordinator(
+    ] = FeverSmartPassiveBluetoothProcessorCoordinator(
         hass,
         _LOGGER,
         address=address,
