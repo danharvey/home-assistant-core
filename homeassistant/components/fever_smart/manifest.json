@@ -1,0 +1,17 @@
+{
+  "domain": "fever_smart",
+  "name": "fever_smart",
+  "bluetooth": [
+    {
+      "manufacturer_id": 8199,
+      "connectable": false
+    }
+  ],
+  "codeowners": ["@danharvey"],
+  "config_flow": true,
+  "dependencies": ["bluetooth_adapters"],
+  "documentation": "https://www.home-assistant.io/integrations/fever_smart",
+  "iot_class": "local_push",
+  "requirements": ["pyfeversmart>=0.1.0"],
+  "version":"0.0.1"
+}
